@@ -31,11 +31,7 @@ const DATA_FOLDER = path.join(
   'YapperLastfmBot'
 );
 
-const DATA_FILE = path.join(DATA_FOLDER, 'lastfm-users.json');
-
-if (!fs.existsSync(DATA_FOLDER)) {
-  fs.mkdirSync(DATA_FOLDER, { recursive: true });
-}
+const DATA_FILE = '/data/lastfm-users.json';
 
 function defaultData() {
   return { users: {} };
