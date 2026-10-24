@@ -1,6 +1,6 @@
 {
   "type": "module",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node launch.js"
   }
 }
