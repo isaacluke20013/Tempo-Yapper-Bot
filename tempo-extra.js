@@ -5,6 +5,18 @@ const IDLE_MS = 10 * 60 * 1000;
 const originalStart = Bot.prototype.start;
 const sessions = new Map();
 
+const mentionReplies = [
+  'hm?',
+  'what',
+  'you called?',
+  '?',
+  'yeah?',
+  'try `/musichelp`',
+  'right here, right now!',
+  "i'm telling you, we need a battle soundtrack.",
+  'everyone on the same tempo. the rest follows.'
+];
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function userIdOf(context) {
@@ -256,6 +268,16 @@ function installTempoExtras(bot) {
       }
     }
   );
+
+  bot.on('message', msg => {
+    if (!msg.mentioned || msg.command) return;
+
+    const reply = mentionReplies[
+      Math.floor(Math.random() * mentionReplies.length)
+    ];
+
+    return msg.reply(reply);
+  });
 
   bot.on('voice_leave', async ev => {
     const session = sessions.get(String(ev.server_id));
