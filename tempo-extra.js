@@ -1,8 +1,8 @@
 import { Bot } from './yapper.js';
-import { installTempoMusic, stopTempoMusic } from './tempo-music.js';
+import { installTempoMusic, stopTempoMusic, hasTempoMusicSession, handleTempoVoiceLeave } from './tempo-music.js';
 
 const TEMPO_OWNER_ID = process.env.TEMPO_OWNER_ID || null;
-const IDLE_MS = 10 * 60 * 1000;
+const IDLE_MS = 5 * 60 * 1000;
 const originalStart = Bot.prototype.start;
 const sessions = new Map();
 
@@ -119,13 +119,14 @@ async function voiceLeave(bot, serverId) {
 }
 
 function scheduleIdleLeave(bot, serverId) {
+  if (hasTempoMusicSession(serverId)) return;
   const session = getSession(serverId);
   clearIdleTimer(session);
 
   session.idleTimer = setTimeout(async () => {
     try {
       await voiceLeave(bot, serverId);
-      console.log(`[tempo voice] left ${serverId} after 10 minutes of inactivity`);
+      console.log(`[tempo voice] left ${serverId} after 5 minutes of inactivity`);
     } catch (err) {
       console.error('[tempo voice] idle leave failed:', err?.message || err);
     } finally {
@@ -209,6 +210,7 @@ async function handleTempo(bot, msg) {
   }
 
   if (sub === 'join') {
+    if (hasTempoMusicSession(serverId)) return msg.reply('Tempo is already connected for music. Use /tempoqueue to see songs.');
     const channelId = await findUserVoiceChannel(bot, serverId, userId);
     if (!channelId) return msg.reply('join a voice channel first.');
 
@@ -235,10 +237,12 @@ async function handleTempo(bot, msg) {
     });
   }
 
-  if (sub === 'pause' || sub === 'resume') {
-    return msg.reply(
-      'Pause/resume is not implemented yet; use /tempoplay to play a track or /tempostop to stop.'
-    );
+  if (['pause', 'resume', 'queue', 'stop'].includes(sub)) {
+    const commandName = ({
+      pause: 'tempopause', resume: 'temporesume',
+      queue: 'tempoqueue', stop: 'tempostop'
+    })[sub];
+    return bot.commands.get(commandName).fn(msg);
   }
 
   return msg.reply(
@@ -247,11 +251,13 @@ async function handleTempo(bot, msg) {
 \`/tempo join\` — join your current VC
 \`/tempo leave\` — leave voice
 \`/tempo play <song/link>\` — play music through /tempoplay
-\`/tempo pause\` — not available yet
-\`/tempo resume\` — not available yet
+\`/tempo pause\` — freeze the current song
+\`/tempo resume\` — resume from the same spot
+\`/tempo queue\` — show current and upcoming songs
+\`/tempo stop\` — stop music and clear the queue
 
-Use /tempoplay <song or link> and /tempostop for actual music playback.
-Tempo leaves after 10 minutes of inactivity.`
+Use /tempoplay <song or link>, /tempoqueue, /tempopause, /temporesume, and /tempostop.
+Tempo leaves after 5 minutes with nothing playing, or when everyone leaves VC.`
   );
 }
 
@@ -284,6 +290,7 @@ function installTempoExtras(bot) {
   });
 
   bot.on('voice_leave', async ev => {
+    handleTempoVoiceLeave(bot, ev);
     const session = sessions.get(String(ev.server_id));
     if (!session || String(session.channelId) !== String(ev.channel_id)) return;
 
