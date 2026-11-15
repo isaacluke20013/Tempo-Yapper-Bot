@@ -246,9 +246,9 @@ async function handleTempo(bot, msg) {
 
 \`/tempo join\` — join your current VC
 \`/tempo leave\` — leave voice
-\`/tempo play <song/link>\` — waiting on Yapper's bot audio API
-\`/tempo pause\` — waiting on Yapper's bot audio API
-\`/tempo resume\` — waiting on Yapper's bot audio API
+\`/tempo play <song/link>\` — play music through /tempoplay
+\`/tempo pause\` — not available yet
+\`/tempo resume\` — not available yet
 
 Use /tempoplay <song or link> and /tempostop for actual music playback.
 Tempo leaves after 10 minutes of inactivity.`
