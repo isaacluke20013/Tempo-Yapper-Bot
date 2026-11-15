@@ -12,13 +12,14 @@ if (source.includes(helpHeader)) {
     helpHeader +
       "**Voice controls**\n" +
       "\\`/tempoplay <YouTube/Spotify track link or song [artist]>\\` — play in your current VC\n" +
-      "\\`/tempoqueue\\` — show the current song and the queue\n" +
+      "\\`/tempoqueue\\` — song titles, artists, durations and what's up next\n" +
       "\\`/tempopause\\` — pause in place\n" +
       "\\`/temporesume\\` — resume at that spot\n" +
+      "\\`/temposkip\\` — skip immediately to the next queued song\n" +
       "\\`/tempostop\\` — stop music, clear queue, and leave voice\n" +
       "\\`/tempo join\\` — join your current VC\n" +
       "\\`/tempo leave\\` — leave voice\n" +
-      "\\`/tempo pause\\` / \\`/tempo resume\\` / \\`/tempo queue\\` — aliases\n" +
+      "\\`/tempo pause\\` / \\`/tempo resume\\` / \\`/tempo queue\\` / \\`/tempo skip\\` — aliases\n" +
       "Tempo leaves after 5 minutes idle or when voice is empty.\n\n"
   );
 }
