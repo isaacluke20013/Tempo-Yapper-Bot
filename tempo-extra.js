@@ -237,10 +237,10 @@ async function handleTempo(bot, msg) {
     });
   }
 
-  if (['pause', 'resume', 'queue', 'stop'].includes(sub)) {
+  if (['pause', 'resume', 'queue', 'skip', 'stop'].includes(sub)) {
     const commandName = ({
       pause: 'tempopause', resume: 'temporesume',
-      queue: 'tempoqueue', stop: 'tempostop'
+      queue: 'tempoqueue', skip: 'temposkip', stop: 'tempostop'
     })[sub];
     return bot.commands.get(commandName).fn(msg);
   }
@@ -253,7 +253,8 @@ async function handleTempo(bot, msg) {
 \`/tempo play <song/link>\` — play music through /tempoplay
 \`/tempo pause\` — freeze the current song
 \`/tempo resume\` — resume from the same spot
-\`/tempo queue\` — show current and upcoming songs
+\`/tempo queue\` — show title, artist and duration for queued songs
+\`/tempo skip\` — skip straight to the next song
 \`/tempo stop\` — stop music and clear the queue
 
 Use /tempoplay <song or link>, /tempoqueue, /tempopause, /temporesume, and /tempostop.
