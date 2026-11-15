@@ -86,106 +86,159 @@ def resolve_track(query):
         return name, stream_url, headers
 
 
-async def play(server_id, channel_id, query):
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    try:
-        loop.add_signal_handler(signal.SIGTERM, stop.set)
-        loop.add_signal_handler(signal.SIGINT, stop.set)
-    except (NotImplementedError, RuntimeError):
-        pass
 
-    call = None
-    ffmpeg = None
-    joined = False
-    bot = Bot(os.environ.get("YAPPER_BOT_TOKEN"), log=False)
-    try:
-        title, url, headers = await asyncio.wait_for(
-            asyncio.to_thread(resolve_track, query), timeout=75
-        )
-        if stop.is_set():
-            return
-        call = await asyncio.wait_for(
-            bot.connect_voice(server_id, channel_id, sample_rate=RATE, channels=CHANNELS),
-            timeout=45,
-        )
-        joined = True
-        args = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error"]
-        header_lines = []
-        for name, value in headers.items():
-            if (re.fullmatch(r"[A-Za-z0-9-]+", str(name))
-                and "\r" not in str(value) and "\n" not in str(value)):
-                header_lines.append(str(name) + ": " + str(value))
-        if header_lines:
-            args += ["-headers", "\r\n".join(header_lines) + "\r\n"]
-        args += [
-            "-i", url, "-vn", "-ac", str(CHANNELS), "-ar", str(RATE),
-            "-acodec", "pcm_s16le", "-f", "s16le", "pipe:1"
-        ]
-        ffmpeg = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        frames = 0
-        while not stop.is_set():
-            try:
-                data = await ffmpeg.stdout.readexactly(FRAME_BYTES)
-            except asyncio.IncompleteReadError as exc:
-                data = exc.partial
-            if not data:
-                break
-            if len(data) < FRAME_BYTES:
-                data = data + (b"\x00" * (FRAME_BYTES - len(data)))
-            from livekit import rtc
-            frame = rtc.AudioFrame(
-                data=data, sample_rate=RATE, num_channels=CHANNELS,
-                samples_per_channel=FRAME_SAMPLES
+class TempoWorker:
+    """One encrypted VC connection per server, reused across queued songs."""
+
+    def __init__(self, server_id, channel_id):
+        self.server_id = server_id
+        self.channel_id = channel_id
+        self.bot = Bot(os.environ.get("YAPPER_BOT_TOKEN"), log=False)
+        self.call = None
+        self.allowed = asyncio.Event()
+        self.allowed.set()
+        self.track_task = None
+
+    async def play_track(self, query):
+        ffmpeg = None
+        outcome = None
+        details = {}
+        try:
+            title, url, headers = await asyncio.wait_for(
+                asyncio.to_thread(resolve_track, query), timeout=75
             )
-            await call.source.capture_frame(frame)
-            frames += 1
-            if frames == 1:
-                emit("playing", title=title, channel_id=channel_id)
-        if ffmpeg.returncode is None:
-            if stop.is_set():
-                ffmpeg.terminate()
-            try:
-                await asyncio.wait_for(ffmpeg.wait(), timeout=4)
-            except asyncio.TimeoutError:
+            emit("resolved", title=title)
+            args = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error"]
+            header_lines = []
+            for name, value in headers.items():
+                if (re.fullmatch(r"[A-Za-z0-9-]+", str(name))
+                    and "\r" not in str(value) and "\n" not in str(value)):
+                    header_lines.append(str(name) + ": " + str(value))
+            if header_lines:
+                args += ["-headers", "\r\n".join(header_lines) + "\r\n"]
+            args += [
+                "-i", url, "-vn", "-ac", str(CHANNELS), "-ar", str(RATE),
+                "-acodec", "pcm_s16le", "-f", "s16le", "pipe:1"
+            ]
+            ffmpeg = await asyncio.create_subprocess_exec(
+                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            frames = 0
+            from livekit import rtc
+            while True:
+                await self.allowed.wait()
+                try:
+                    data = await ffmpeg.stdout.readexactly(FRAME_BYTES)
+                except asyncio.IncompleteReadError as exc:
+                    data = exc.partial
+                if not data:
+                    break
+                # A pause arriving during a read freezes this exact PCM frame.
+                await self.allowed.wait()
+                if len(data) < FRAME_BYTES:
+                    data += b"\x00" * (FRAME_BYTES - len(data))
+                frame = rtc.AudioFrame(
+                    data=data, sample_rate=RATE, num_channels=CHANNELS,
+                    samples_per_channel=FRAME_SAMPLES
+                )
+                await self.call.source.capture_frame(frame)
+                frames += 1
+                if frames == 1:
+                    emit("playing", title=title, channel_id=self.channel_id)
+
+            if ffmpeg.returncode is None:
+                try:
+                    await asyncio.wait_for(ffmpeg.wait(), timeout=4)
+                except asyncio.TimeoutError:
+                    ffmpeg.kill()
+                    await ffmpeg.wait()
+            if not frames or ffmpeg.returncode not in (None, 0):
+                detail = (await ffmpeg.stderr.read()).decode(errors="replace")[-300:]
+                raise RuntimeError("Unable to decode song" + (": " + detail if detail else "."))
+            # Allow the final buffered PCM frames to reach the call.
+            await asyncio.sleep(0.5)
+            outcome, details = "finished", {"title": title}
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            outcome, details = "track_error", {"message": str(exc)[:350]}
+        finally:
+            if ffmpeg and ffmpeg.returncode is None:
                 ffmpeg.kill()
-                await ffmpeg.wait()
-        if not frames and not stop.is_set():
-            detail = (await ffmpeg.stderr.read()).decode(errors="replace")[-300:]
-            raise RuntimeError("Unable to decode audio" + (": " + detail if detail else "."))
-        if not stop.is_set():
-            await asyncio.sleep(0.75)
-            emit("finished", title=title)
-    except Exception as exc:
-        if not stop.is_set():
+                try:
+                    await asyncio.wait_for(ffmpeg.wait(), timeout=3)
+                except asyncio.TimeoutError:
+                    pass
+            self.track_task = None
+            if outcome:
+                emit(outcome, **details)
+
+    async def run(self):
+        try:
+            self.call = await asyncio.wait_for(
+                self.bot.connect_voice(self.server_id, self.channel_id,
+                                       sample_rate=RATE, channels=CHANNELS),
+                timeout=45
+            )
+            emit("ready", channel_id=self.channel_id)
+            # Persistent stdin control channel: play, pause, resume, leave.
+            reader = asyncio.StreamReader()
+            loop = asyncio.get_running_loop()
+            protocol = asyncio.StreamReaderProtocol(reader)
+            await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                try:
+                    command = json.loads(line)
+                except (ValueError, TypeError):
+                    emit("warning", message="Invalid control message.")
+                    continue
+                action = command.get("action")
+                if action == "play":
+                    if self.track_task and not self.track_task.done():
+                        emit("warning", message="The previous track is still playing.")
+                        continue
+                    query = str(command.get("query") or "")[:600]
+                    self.track_task = asyncio.create_task(self.play_track(query))
+                elif action == "pause":
+                    self.allowed.clear()
+                    emit("paused")
+                elif action == "resume":
+                    self.allowed.set()
+                    emit("resumed")
+                elif action == "leave":
+                    break
+        except Exception as exc:
             emit("error", message=str(exc)[:350])
-    finally:
-        if ffmpeg and ffmpeg.returncode is None:
-            ffmpeg.kill()
-            try:
-                await asyncio.wait_for(ffmpeg.wait(), timeout=3)
-            except asyncio.TimeoutError:
-                pass
-        if call:
-            try:
-                await asyncio.wait_for(call.leave(), timeout=10)
-            except Exception:
-                pass
-        if joined:
-            try:
-                await asyncio.wait_for(asyncio.to_thread(bot.leave_voice, server_id), timeout=10)
-            except Exception:
-                pass
+        finally:
+            self.allowed.set()
+            if self.track_task and not self.track_task.done():
+                self.track_task.cancel()
+                try:
+                    await self.track_task
+                except asyncio.CancelledError:
+                    pass
+            if self.call:
+                try:
+                    await asyncio.wait_for(self.call.leave(), timeout=10)
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self.bot.leave_voice, self.server_id), timeout=10
+                    )
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 4:
-        emit("error", message="Missing server/channel/track arguments.")
+    if len(sys.argv) < 3:
+        emit("error", message="Missing server or channel arguments.")
         sys.exit(2)
     try:
-        asyncio.run(play(sys.argv[1], sys.argv[2], sys.argv[3]))
+        asyncio.run(TempoWorker(sys.argv[1], sys.argv[2]).run())
     except Exception as exc:
         emit("error", message=str(exc)[:350])
         sys.exit(1)
