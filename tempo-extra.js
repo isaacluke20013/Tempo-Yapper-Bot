@@ -1,4 +1,5 @@
 import { Bot } from './yapper.js';
+import { installTempoMusic, stopTempoMusic } from './tempo-music.js';
 
 const TEMPO_OWNER_ID = process.env.TEMPO_OWNER_ID || null;
 const IDLE_MS = 10 * 60 * 1000;
@@ -220,6 +221,7 @@ async function handleTempo(bot, msg) {
 
   if (sub === 'leave' || sub === 'disconnect') {
     const session = getSession(serverId);
+    await stopTempoMusic(serverId);
     await voiceLeave(bot, serverId);
     clearIdleTimer(session);
     sessions.delete(String(serverId));
@@ -227,14 +229,15 @@ async function handleTempo(bot, msg) {
   }
 
   if (sub === 'play') {
-    return msg.reply(
-      'Tempo can join voice now, but Yapper has not exposed bot audio playback in the official bot API yet. `/tempo play` is ready to wire up as soon as they add the audio endpoint.'
-    );
+    return bot.commands.get('tempoplay').fn({
+      ...msg,
+      args: argument
+    });
   }
 
   if (sub === 'pause' || sub === 'resume') {
     return msg.reply(
-      'pause/resume will work once Yapper exposes bot audio playback controls.'
+      'Pause/resume is not implemented yet; use /tempoplay to play a track or /tempostop to stop.'
     );
   }
 
@@ -247,6 +250,7 @@ async function handleTempo(bot, msg) {
 \`/tempo pause\` — waiting on Yapper's bot audio API
 \`/tempo resume\` — waiting on Yapper's bot audio API
 
+Use /tempoplay <song or link> and /tempostop for actual music playback.
 Tempo leaves after 10 minutes of inactivity.`
   );
 }
@@ -293,6 +297,14 @@ function installTempoExtras(bot) {
       }
     } catch (err) {
       console.error('[tempo voice] could not inspect voice channel:', err?.message || err);
+    }
+  });
+
+  installTempoMusic(bot, {
+    resolveServerId,
+    findUserVoiceChannel,
+    suspendIdleLeave(serverId) {
+      clearIdleTimer(getSession(serverId));
     }
   });
 
