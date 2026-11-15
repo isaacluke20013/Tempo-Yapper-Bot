@@ -42,22 +42,72 @@ def spotify_search(url):
     return title
 
 
-def resolve_track(query):
+def normalized_lookup(query):
     query = query.strip()[:600]
     if not query:
         raise ValueError("Give a Spotify/YouTube link or a song name.")
     parsed = urlsplit(query) if "://" in query else None
     if parsed and parsed.scheme.lower() not in ("https", "http"):
         raise ValueError("Only Spotify or YouTube links are supported.")
+    original_link = None
     if parsed:
         host = (parsed.hostname or "").lower()
         if host in SUPPORTED_SPOTIFY:
+            original_link = query
             query = spotify_search(query)
         elif host not in SUPPORTED_YOUTUBE:
             raise ValueError("Use a Spotify/YouTube link or type a song and artist.")
         elif parsed.path.rstrip("/") in ("/playlist", "/channel", "/@"):
             raise ValueError("Use one YouTube video, not a playlist or channel.")
+        else:
+            original_link = query
+    return query, original_link
 
+
+def track_fields(info, fallback, original_link=None):
+    title = str(info.get("track") or info.get("title") or fallback).strip()[:180]
+    artist = str(
+        info.get("artist") or info.get("creator") or
+        info.get("uploader") or info.get("channel") or ""
+    ).strip()[:110]
+    try:
+        duration = round(float(info.get("duration") or 0))
+    except (TypeError, ValueError, OverflowError):
+        duration = 0
+    duration = duration if 0 < duration < 24 * 60 * 60 else None
+    link = original_link or info.get("webpage_url") or info.get("original_url")
+    if not link and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(info.get("id") or "")):
+        link = "https://www.youtube.com/watch?v=" + info["id"]
+    if link and urlsplit(str(link)).scheme != "https":
+        link = None
+    return {"title": title, "artist": artist, "duration": duration, "link": link}
+
+
+def lookup_metadata(query):
+    query, original_link = normalized_lookup(query)
+    opts = {
+        "default_search": "ytsearch1",
+        "noplaylist": True,
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": 12,
+        "extractor_retries": 1,
+    }
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(query, download=False)
+    if not info:
+        raise ValueError("No matching YouTube song found.")
+    if "entries" in info:
+        info = next((entry for entry in info.get("entries") or [] if entry), None)
+    if not info:
+        raise ValueError("No matching YouTube song found.")
+    return track_fields(info, query, original_link)
+
+
+def resolve_track(query):
+    query, original_link = normalized_lookup(query)
     opts = {
         "format": "bestaudio/best",
         "default_search": "ytsearch1",
@@ -81,9 +131,9 @@ def resolve_track(query):
             stream_url = options[-1].get("url") if options else None
         if not stream_url or urlsplit(stream_url).scheme != "https":
             raise ValueError("YouTube didn't provide a playable audio stream.")
-        name = str(info.get("title") or query).strip()[:180]
+        fields = track_fields(info, query, original_link)
         headers = info.get("http_headers") or {}
-        return name, stream_url, headers
+        return fields, stream_url, headers
 
 
 
@@ -98,16 +148,32 @@ class TempoWorker:
         self.allowed = asyncio.Event()
         self.allowed.set()
         self.track_task = None
+        self.track_id = None
+        self.probes = {}
+        self.probe_slots = asyncio.Semaphore(2)
 
-    async def play_track(self, query):
+    async def probe_track(self, track_id, query):
+        try:
+            async with self.probe_slots:
+                fields = await asyncio.wait_for(
+                    asyncio.to_thread(lookup_metadata, query), timeout=40
+                )
+            emit("metadata", id=track_id, **fields)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            emit("metadata_error", id=track_id, message=str(exc)[:180])
+
+    async def play_track(self, query, track_id):
         ffmpeg = None
         outcome = None
         details = {}
         try:
-            title, url, headers = await asyncio.wait_for(
+            fields, url, headers = await asyncio.wait_for(
                 asyncio.to_thread(resolve_track, query), timeout=75
             )
-            emit("resolved", title=title)
+            title = fields["title"]
+            emit("resolved", id=track_id, **fields)
             args = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error"]
             header_lines = []
             for name, value in headers.items():
@@ -144,7 +210,7 @@ class TempoWorker:
                 await self.call.source.capture_frame(frame)
                 frames += 1
                 if frames == 1:
-                    emit("playing", title=title, channel_id=self.channel_id)
+                    emit("playing", id=track_id, channel_id=self.channel_id, **fields)
 
             if ffmpeg.returncode is None:
                 try:
@@ -157,11 +223,11 @@ class TempoWorker:
                 raise RuntimeError("Unable to decode song" + (": " + detail if detail else "."))
             # Allow the final buffered PCM frames to reach the call.
             await asyncio.sleep(0.5)
-            outcome, details = "finished", {"title": title}
+            outcome, details = "finished", {"id": track_id, "title": title}
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            outcome, details = "track_error", {"message": str(exc)[:350]}
+            outcome, details = "track_error", {"id": track_id, "message": str(exc)[:350]}
         finally:
             if ffmpeg and ffmpeg.returncode is None:
                 ffmpeg.kill()
@@ -201,7 +267,29 @@ class TempoWorker:
                         emit("warning", message="The previous track is still playing.")
                         continue
                     query = str(command.get("query") or "")[:600]
-                    self.track_task = asyncio.create_task(self.play_track(query))
+                    self.track_id = str(command.get("id") or "")
+                    self.track_task = asyncio.create_task(
+                        self.play_track(query, self.track_id)
+                    )
+                elif action == "probe":
+                    track_id = str(command.get("id") or "")
+                    query = str(command.get("query") or "")[:600]
+                    if track_id and track_id not in self.probes:
+                        task = asyncio.create_task(self.probe_track(track_id, query))
+                        self.probes[track_id] = task
+                        task.add_done_callback(
+                            lambda completed, key=track_id: self.probes.pop(key, None)
+                        )
+                elif action == "skip":
+                    track_id = str(command.get("id") or "")
+                    if track_id and track_id == self.track_id:
+                        if self.track_task and not self.track_task.done():
+                            self.track_task.cancel()
+                            try:
+                                await self.track_task
+                            except asyncio.CancelledError:
+                                pass
+                        emit("skipped", id=track_id)
                 elif action == "pause":
                     self.allowed.clear()
                     emit("paused")
@@ -220,6 +308,10 @@ class TempoWorker:
                     await self.track_task
                 except asyncio.CancelledError:
                     pass
+            for task in self.probes.values():
+                task.cancel()
+            if self.probes:
+                await asyncio.gather(*self.probes.values(), return_exceptions=True)
             if self.call:
                 try:
                     await asyncio.wait_for(self.call.leave(), timeout=10)
