@@ -1,0 +1,5 @@
+# The Yapper SDK provides encrypted LiveKit voice handoff.
+yapper.py==1.7.1
+livekit
+cryptography
+yt-dlp
