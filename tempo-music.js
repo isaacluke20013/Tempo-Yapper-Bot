@@ -28,7 +28,7 @@ function trackSummary(track, withLink = false) {
   const artist = track.artist ? ' — ' + String(track.artist).slice(0, 100) : '';
   const duration = timeText(track.duration);
   const length = duration ? ' (' + duration + ')' : '';
-  const link = withLink && track.link ? '\nSource: ' + String(track.link).slice(0, 260) : '';
+  const link = withLink && track.link ? '\nLink: ' + String(track.link).slice(0, 260) : '';
   return title + artist + length + link;
 }
 
@@ -204,10 +204,10 @@ function workerStatus(session, event) {
     session.currentState = session.paused ? 'paused' : 'playing';
     const waiting = session.queue.length;
     void announce(session.bot, session.textChannelId,
-      'Now playing: ' + trackSummary(session.current, true) +
-      ' in <#' + session.channelId + '>.' +
-      (waiting ? ' (' + waiting + ' queued)' : '') +
-      ' Use /tempopause, /temposkip, /tempoqueue or /tempostop.');
+      'Now playing in <#' + session.channelId + '>:' +
+      '\n' + trackSummary(session.current, true) +
+      (waiting ? '\n' + waiting + ' song(s) queued.' : '') +
+      '\nUse /tempopause, /temposkip, /tempoqueue or /tempostop.');
     probeUpcoming(session);
     announceNext(session);
   } else if (type === 'finished') {
