@@ -11,11 +11,11 @@ if (source.includes(helpHeader)) {
     helpHeader,
     helpHeader +
       "**Voice controls**\n" +
+      "\\`/tempoplay <YouTube/Spotify track link or song [artist]>\\` — play in your current VC\n" +
+      "\\`/tempostop\\` — stop music and leave voice\n" +
       "\\`/tempo join\\` — join your current VC\n" +
       "\\`/tempo leave\\` — leave voice\n" +
-      "\\`/tempo play <song/link>\\` — play music when Yapper exposes audio playback\n" +
-      "\\`/tempo pause\\` — pause playback\n" +
-      "\\`/tempo resume\\` — resume playback\n\n"
+      "\\`/tempo pause\\` / \\`/tempo resume\\` — not available yet\n\n"
   );
 }
 
